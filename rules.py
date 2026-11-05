@@ -7,7 +7,7 @@ Same rules as api/src/packs/inspect.ts. Keep the two in step."""
 import re
 import zipfile
 
-ALLOWED = {"png", "json", "mcmeta", "ogg", "txt", "md", "properties", "lang", "fsh", "vsh", "glsl", "ttf", "otf", "license"}
+ALLOWED = {"png", "json", "json5", "mcmeta", "ogg", "txt", "md", "properties", "lang", "fsh", "vsh", "glsl", "ttf", "otf", "license"}
 PLAIN = {"license", "licence", "readme", "credits", "notice", "copying", "authors"}
 # A licence-like name may carry any ending (LICENSE.ASSETS, LICENSE-CODE), except one that is a program or an archive.
 LICENSE_LIKE = re.compile(r"^(license|licence|readme|credits|notice|copying|authors)([-_.][a-z0-9_.-]*)?$")
