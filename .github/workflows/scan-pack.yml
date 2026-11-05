@@ -1,0 +1,63 @@
+name: Scan packs
+
+# Checks resource packs people uploaded. The Mineshire API starts this the moment a pack arrives (see README.md);
+# the daily run is a safety net that picks up anything left waiting.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 4 * * *'
+
+# One scan at a time: a second run waits and then finds the list empty or shorter.
+concurrency:
+  group: scan-pack
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        id: python
+        with:
+          python-version: '3.12'
+
+      # The Python packages (torch alone is most of a gigabyte) are kept as a ready environment, so a run only unpacks
+      # them instead of downloading and installing them again. Change the v1 to start over.
+      - name: Restore the Python packages
+        id: packages
+        uses: actions/cache@v4
+        with:
+          path: ~/scanner-venv
+          key: venv-v1-${{ steps.python.outputs.python-version }}-${{ hashFiles('requirements.txt') }}
+
+      # The picture model (about a third of a gigabyte) is kept between runs so it is only downloaded once.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: picture-model-v1
+
+      - name: Install ClamAV
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clamav
+          sudo systemctl stop clamav-freshclam || true
+          sudo freshclam
+
+      - name: Install the picture libraries (CPU only)
+        if: steps.packages.outputs.cache-hit != 'true'
+        run: |
+          python -m venv ~/scanner-venv
+          ~/scanner-venv/bin/pip install --quiet torch --index-url https://download.pytorch.org/whl/cpu
+          ~/scanner-venv/bin/pip install --quiet -r requirements.txt
+
+      - name: Scan the packs that are waiting
+        env:
+          PACKS_API_URL: ${{ secrets.PACKS_API_URL }}
+          PACKS_SCAN_SECRET: ${{ secrets.PACKS_SCAN_SECRET }}
+        run: ~/scanner-venv/bin/python scan.py
