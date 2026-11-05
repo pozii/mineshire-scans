@@ -7,6 +7,7 @@ what is easy to see, not a guarantee."""
 
 import hashlib
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 from PIL import Image
@@ -19,6 +20,8 @@ MAX_LOOKED_AT = 300
 MIN_SIDE = 128
 # The share of confidence at which a picture counts as adult. Tune it on real packs; a pixel-art pack can fool a photo model.
 THRESHOLD = float(os.environ.get("PICTURE_THRESHOLD", "0.85"))
+# Only for the log: a score from here up is worth a look when tuning, even though it did not refuse the pack.
+NEAR = 0.5
 
 Image.MAX_IMAGE_PIXELS = 50_000_000  # PIL then refuses a "decompression bomb" instead of filling the memory
 
@@ -83,11 +86,39 @@ class Classifier:
         return self.torch.softmax(logits, dim=-1)[:, self.nsfw].tolist()
 
 
-def scan(classifier: Classifier, chosen: list[tuple[Path, int]], root: Path) -> None:
-    """Raises Refused at the first picture that looks adult."""
+@dataclass
+class Report:
+    """What the picture check saw, kept in the log so the threshold can be tuned on real packs instead of guessed."""
+
+    looked: int = 0
+    highest: float = 0.0
+    highest_path: str = ""
+    near: int = 0  # how many scored at least NEAR, so a pack close to the line shows up even when it passed
+
+    def line(self) -> str:
+        return f"{self.looked} looked at, highest {self.highest:.4f} ({self.highest_path or 'none'}), {self.near} at {NEAR} or more, threshold {THRESHOLD}"
+
+
+class Flagged(rules.Refused):
+    """A picture looks adult. Carries the report up to that picture, for the log."""
+
+    def __init__(self, message: str, report: Report) -> None:
+        super().__init__(message)
+        self.report = report
+
+
+def scan(classifier: Classifier, chosen: list[tuple[Path, int]], root: Path) -> Report:
+    """Returns what was seen. Raises Flagged (a Refused) at the first picture that looks adult."""
+    report = Report()
     paths = [p for p, _ in chosen]
     for start in range(0, len(paths), 16):
         batch = paths[start : start + 16]
         for path, score in zip(batch, classifier.score(batch)):
+            name = path.relative_to(root).as_posix()
+            report.looked += 1
+            report.near += score >= NEAR
+            if score > report.highest:
+                report.highest, report.highest_path = score, name
             if score >= THRESHOLD:
-                raise rules.Refused(f"A picture in this pack ({path.relative_to(root).as_posix()}) looks like adult content.")
+                raise Flagged(f"A picture in this pack ({name}) looks like adult content.", report)
+    return report

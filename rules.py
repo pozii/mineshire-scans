@@ -2,7 +2,8 @@
 applied again here to the file that is really going to be published, because the upload link stays valid for a few
 minutes after the first check and the file could have been replaced in that time.
 
-Same rules as api/src/packs/inspect.ts. Keep the two in step."""
+The name rules (which files a pack may hold, the same file twice) are the same as in api/src/packs/inspect.ts. Keep the
+two in step. What a file's bytes look like (`Watch`) is only checked here: the API never reads the whole file."""
 
 import re
 import zipfile
@@ -16,6 +17,15 @@ JUNK = {"thumbs.db", ".ds_store", "desktop.ini"}
 MAX_FILES = 20_000
 MAX_UNPACKED = 1_000_000_000
 MAX_ONE = 150_000_000
+
+# Files that are plain text. Their bytes are checked too, because a program can hide under a text file's name.
+TEXT = {"txt", "md", "json", "json5", "mcmeta", "properties", "lang", "fsh", "vsh", "glsl", "license"}
+# How programs, other archives and compressed files begin. Real text never starts like this.
+BINARY_STARTS = (
+    b"PK\x03\x04", b"PK\x05\x06", b"\x1f\x8b\x08", b"Rar!\x1a\x07", b"7z\xbc\xaf\x27\x1c", b"\xfd7zXZ\x00",
+    b"\x7fELF", b"\xca\xfe\xba\xbe", b"\xfe\xed\xfa\xce", b"\xfe\xed\xfa\xcf", b"\xce\xfa\xed\xfe", b"\xcf\xfa\xed\xfe", b"%PDF-",
+)
+FONT_STARTS = (b"\x00\x01\x00\x00", b"true", b"OTTO", b"ttcf")
 
 
 class Refused(Exception):
@@ -40,6 +50,10 @@ def safe(name: str) -> bool:
     return not ("\\" in name or name.startswith("/") or ".." in name.split("/") or re.match(r"^[a-zA-Z]:", name) or "\0" in name)
 
 
+def shown(name: str) -> str:
+    return name if len(name) <= 60 else name[:57] + "…"
+
+
 def check(archive: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
     """Returns the files to look at, or raises Refused."""
     infos = archive.infolist()
@@ -48,6 +62,9 @@ def check(archive: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
     if len(infos) > MAX_FILES:
         raise Refused(f"It holds more than {MAX_FILES} files.")
     kept, total, has_meta = [], 0, False
+    # The same name twice is how a zip can show one file to a checker and another to the game. Capital letters count as
+    # the same name, because on many systems they are.
+    seen: set[str] = set()
     for info in infos:
         name = info.filename
         if not safe(name):
@@ -60,8 +77,10 @@ def check(archive: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
         if kind == "junk":
             continue
         if kind is None:
-            shown = name if len(name) <= 60 else name[:57] + "…"
-            raise Refused(f"A resource pack can't hold “{shown}”. Only pictures, sounds, fonts, text and settings files are allowed.")
+            raise Refused(f"A resource pack can't hold “{shown(name)}”. Only pictures, sounds, fonts, text and settings files are allowed.")
+        if name.lower() in seen:
+            raise Refused(f"A resource pack can't hold “{shown(name)}” more than once.")
+        seen.add(name.lower())
         if info.file_size > MAX_ONE:
             raise Refused(f"{name} is too large.")
         total += info.file_size
@@ -74,10 +93,33 @@ def check(archive: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
     return kept
 
 
-def check_magic(name: str, head: bytes) -> None:
-    """A file named .png or .ogg must start like one, so a program can't hide under a picture's name."""
-    lower = name.lower()
-    if lower.endswith(".png") and not head.startswith(b"\x89PNG\r\n\x1a\n"):
-        raise Refused(f"{name} is not a real picture.")
-    if lower.endswith(".ogg") and not head.startswith(b"OggS"):
-        raise Refused(f"{name} is not a real sound file.")
+class Watch:
+    """Looks at the bytes of one file while it is unpacked. A file must be what its name says: a picture starts like a
+    picture, a sound like a sound, a font like a font, and a text file holds text, so a program can't hide under a name
+    (the structure rules only see names)."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.kind = kind_of(name)
+        self.first = True
+        self.utf16 = False
+
+    def feed(self, chunk: bytes) -> None:
+        if self.first:
+            self.first = False
+            self._head(chunk[:16])
+        if self.kind in TEXT and not self.utf16 and b"\0" in chunk:
+            raise Refused(f"{shown(self.name)} is not a text file; it holds binary data.")
+
+    def _head(self, head: bytes) -> None:
+        if self.kind == "png" and not head.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise Refused(f"{shown(self.name)} is not a real picture.")
+        if self.kind == "ogg" and not head.startswith(b"OggS"):
+            raise Refused(f"{shown(self.name)} is not a real sound file.")
+        if self.kind in ("ttf", "otf") and not head.startswith(FONT_STARTS):
+            raise Refused(f"{shown(self.name)} is not a real font.")
+        if self.kind in TEXT:
+            # Text saved as UTF-16 has a zero byte between letters, which is fine when it says so at the start.
+            self.utf16 = head.startswith((b"\xff\xfe", b"\xfe\xff"))
+            if head.startswith(BINARY_STARTS):
+                raise Refused(f"{shown(self.name)} is not a text file; it holds a program or an archive.")

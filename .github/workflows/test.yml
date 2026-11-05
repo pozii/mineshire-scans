@@ -1,0 +1,31 @@
+name: Tests
+
+# The tests need only Python and Pillow (no model, no ClamAV), so a run takes well under a minute. They run when code
+# or tests change, so a change to the rules can't ship without the cases that protect them.
+on:
+  push:
+    branches: [main]
+    paths: ['**.py', 'tests/**', 'requirements.txt', '.github/workflows/test.yml']
+  pull_request:
+    paths: ['**.py', 'tests/**', 'requirements.txt', '.github/workflows/test.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - run: pip install --quiet pillow
+
+      - run: python -m unittest discover -s tests -t . -v
