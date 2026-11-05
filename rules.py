@@ -8,7 +8,10 @@ import re
 import zipfile
 
 ALLOWED = {"png", "json", "mcmeta", "ogg", "txt", "md", "properties", "lang", "fsh", "vsh", "glsl", "ttf", "otf", "license"}
-PLAIN = {"license", "licence", "readme", "credits", "notice", "copying"}
+PLAIN = {"license", "licence", "readme", "credits", "notice", "copying", "authors"}
+# A licence-like name may carry any ending (LICENSE.ASSETS, LICENSE-CODE), except one that is a program or an archive.
+LICENSE_LIKE = re.compile(r"^(license|licence|readme|credits|notice|copying|authors)([-_.][a-z0-9_.-]*)?$")
+NEVER = {"exe", "dll", "so", "dylib", "jar", "class", "zip", "rar", "7z", "gz", "tgz", "tar", "bz2", "xz", "bat", "cmd", "com", "scr", "msi", "ps1", "sh", "js", "vbs", "py", "lnk", "apk", "dmg", "iso", "bin"}
 JUNK = {"thumbs.db", ".ds_store", "desktop.ini"}
 MAX_FILES = 20_000
 MAX_UNPACKED = 1_000_000_000
@@ -25,8 +28,12 @@ def kind_of(name: str) -> str | None:
     if base in JUNK:
         return "junk"
     dot = base.rfind(".")
-    kind = base[dot + 1 :] if dot > 0 else ("license" if base in PLAIN else "")
-    return kind if kind in ALLOWED else None
+    ending = base[dot + 1 :] if dot > 0 else ""
+    if ending in ALLOWED:
+        return ending
+    if dot <= 0 and base in PLAIN:
+        return "license"
+    return "license" if LICENSE_LIKE.match(base) and ending not in NEVER else None
 
 
 def safe(name: str) -> bool:
